@@ -2,29 +2,38 @@ import { useMemo } from 'react'
 import { cosineSimilarity, toFeatureVector } from '@/utils/audioFeatures'
 import type { EnrichedTrack, ForceEdge } from '@/types/spotify'
 
-const SIMILARITY_THRESHOLD = 0.75
+// Each node connects to its K most similar peers.
+// K=3 gives ~45-55 unique edges for 30 tracks — a clean, readable graph.
+const K_NEIGHBOURS = 3
 
-/**
- * Computes all pairs with cosine similarity > threshold.
- * Returns ForceEdge[] ready to pass into D3 forceLink.
- */
 export function useAudioSimilarity(tracks: EnrichedTrack[]): ForceEdge[] {
   return useMemo(() => {
-    const edges: ForceEdge[] = []
+    if (tracks.length < 2) return []
+
     const vectors = tracks.map((t) => toFeatureVector(t.audioFeatures))
+    const edgeMap = new Map<string, ForceEdge>()
 
     for (let i = 0; i < tracks.length; i++) {
-      for (let j = i + 1; j < tracks.length; j++) {
-        const sim = cosineSimilarity(vectors[i], vectors[j])
-        if (sim >= SIMILARITY_THRESHOLD) {
-          edges.push({
-            source: tracks[i].track.id,
-            target: tracks[j].track.id,
+      // Score every other track against i
+      const ranked = tracks
+        .map((_, j) => ({ j, sim: i !== j ? cosineSimilarity(vectors[i], vectors[j]) : -1 }))
+        .sort((a, b) => b.sim - a.sim)
+        .slice(0, K_NEIGHBOURS)
+
+      for (const { j, sim } of ranked) {
+        // Deduplicate edges — use sorted index pair as key
+        const [lo, hi] = i < j ? [i, j] : [j, i]
+        const key = `${lo}-${hi}`
+        if (!edgeMap.has(key)) {
+          edgeMap.set(key, {
+            source: tracks[lo].track.id,
+            target: tracks[hi].track.id,
             similarity: sim,
           })
         }
       }
     }
-    return edges
+
+    return [...edgeMap.values()]
   }, [tracks])
 }

@@ -13,42 +13,40 @@ interface ForceGraphProps {
   tracks: EnrichedTrack[]
 }
 
+// How much the mouse must move before we treat it as a drag (not a click)
+const DRAG_THRESHOLD_PX = 6
+
 export function ForceGraph({ tracks }: ForceGraphProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const gRef = useRef<SVGGElement>(null)
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null)
+  const dragStateRef = useRef<{
+    nodeId: string
+    startX: number
+    startY: number
+    hasMoved: boolean
+  } | null>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 })
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const { selectedTrack, hoveredTrackId, filters, setSelectedTrack, setHoveredTrackId } =
+  const { selectedTrack, hoveredTrackId, setSelectedTrack, setHoveredTrackId } =
     useDashboardStore()
 
-  // Build ForceNode array from enriched tracks
   const maxPlayCount = Math.max(...tracks.map((t) => t.playCount), 1)
-  const forceNodes: ForceNode[] = tracks
-    .filter((t) => {
-      const e = t.audioFeatures.energy
-      return e >= filters.energyRange[0] && e <= filters.energyRange[1]
-    })
-    .map((t) => ({
-      id: t.track.id,
-      enriched: t,
-      radius: playCountToRadius(t.playCount, maxPlayCount),
-      color: energyToColor(t.audioFeatures.energy),
-      pulseSpeed: getPulseSpeed(t.lastPlayedAt),
-    }))
+  const forceNodes: ForceNode[] = tracks.map((t) => ({
+    id: t.track.id,
+    enriched: t,
+    radius: playCountToRadius(t.playCount, maxPlayCount),
+    color: energyToColor(t.audioFeatures.energy),
+    pulseSpeed: getPulseSpeed(t.lastPlayedAt),
+  }))
 
-  const filteredTracks = tracks.filter((t) => {
-    const e = t.audioFeatures.energy
-    return e >= filters.energyRange[0] && e <= filters.energyRange[1]
-  })
-
-  const edges: ForceEdge[] = useAudioSimilarity(filteredTracks)
-  const { nodes, edges: simEdges } = useForceSimulation(
+  const edges: ForceEdge[] = useAudioSimilarity(tracks)
+  const { nodes, edges: simEdges, fixNode, releaseNode } = useForceSimulation(
     forceNodes, edges, dimensions.width, dimensions.height,
   )
 
-  // Resize observer
+  // ── Resize observer ───────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return
     const ro = new ResizeObserver((entries) => {
@@ -59,12 +57,17 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
     return () => ro.disconnect()
   }, [])
 
-  // D3 zoom
+  // ── D3 zoom ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (!svgRef.current || !gRef.current) return
     const zoom = d3
       .zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.3, 4])
+      .scaleExtent([0.15, 6])
+      .filter((event) => {
+        // Block pan/zoom while dragging a node
+        if (dragStateRef.current) return false
+        return !event.ctrlKey && event.button === 0 || event.type === 'wheel'
+      })
       .on('zoom', (event: d3.D3ZoomEvent<SVGSVGElement, unknown>) => {
         if (gRef.current) {
           d3.select(gRef.current).attr('transform', event.transform.toString())
@@ -74,14 +77,68 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
     zoomRef.current = zoom
   }, [])
 
+  // ── Node drag: mousedown starts tracking ──────────────────────────────
+  const handleNodeDragStart = useCallback(
+    (nodeId: string, e: React.MouseEvent) => {
+      e.stopPropagation()
+      e.nativeEvent.stopImmediatePropagation()  // prevent D3 zoom from panning
+      dragStateRef.current = {
+        nodeId,
+        startX: e.clientX,
+        startY: e.clientY,
+        hasMoved: false,
+      }
+      // Pre-fix so node doesn't jump when we start moving
+      const simNode = nodes.find((n) => n.id === nodeId)
+      if (simNode) fixNode(nodeId, simNode.x ?? 0, simNode.y ?? 0)
+    },
+    [nodes, fixNode],
+  )
+
+  // ── Node drag: mousemove updates pinned position ──────────────────────
+  const handleSvgMouseMove = useCallback(
+    (e: React.MouseEvent<SVGSVGElement>) => {
+      const drag = dragStateRef.current
+      if (!drag || !svgRef.current) return
+
+      const dx = e.clientX - drag.startX
+      const dy = e.clientY - drag.startY
+      if (!drag.hasMoved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
+
+      drag.hasMoved = true
+      const rect = svgRef.current.getBoundingClientRect()
+      const transform = d3.zoomTransform(svgRef.current)
+      // Convert screen → simulation space
+      const simX = (e.clientX - rect.left - transform.x) / transform.k
+      const simY = (e.clientY - rect.top - transform.y) / transform.k
+      fixNode(drag.nodeId, simX, simY)
+    },
+    [fixNode],
+  )
+
+  // ── Node drag: mouseup ────────────────────────────────────────────────
+  // If the user actually dragged → keep node PINNED at drop position (reshape!)
+  // If it was just a quick click → release so physics takes over again
+  const handleSvgMouseUp = useCallback(() => {
+    const drag = dragStateRef.current
+    if (!drag) return
+    if (!drag.hasMoved) {
+      // Plain click — release the pin so node stays in physics
+      releaseNode(drag.nodeId)
+    }
+    // If hasMoved → node stays pinned exactly where user dropped it
+    dragStateRef.current = null
+  }, [releaseNode])
+
+  // ── Zoom controls ─────────────────────────────────────────────────────
   const handleZoomIn = useCallback(() => {
     if (!svgRef.current || !zoomRef.current) return
-    d3.select(svgRef.current).transition().duration(250).call(zoomRef.current.scaleBy, 1.4)
+    d3.select(svgRef.current).transition().duration(220).call(zoomRef.current.scaleBy, 1.4)
   }, [])
 
   const handleZoomOut = useCallback(() => {
     if (!svgRef.current || !zoomRef.current) return
-    d3.select(svgRef.current).transition().duration(250).call(zoomRef.current.scaleBy, 0.7)
+    d3.select(svgRef.current).transition().duration(220).call(zoomRef.current.scaleBy, 0.7)
   }, [])
 
   const handleResetZoom = useCallback(() => {
@@ -92,9 +149,15 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
       .call(zoomRef.current.transform, d3.zoomIdentity)
   }, [])
 
-  // Edge opacity mapped from similarity 0.75–1.0 → 0.1–0.6
-  function edgeOpacity(sim: number): number {
-    return 0.1 + ((sim - 0.75) / 0.25) * 0.5
+  // Edge colour — linear gradient between node colours would be ideal;
+  // using a soft teal so edges read clearly against the dark background
+  function edgeStyle(sim: number, lit: boolean): { opacity: number; width: number } {
+    // similarity 0.75–1.0 → opacity 0.18–0.55 (visible but not noisy)
+    const base = 0.18 + ((sim - 0.75) / 0.25) * 0.37
+    return {
+      opacity: lit ? Math.min(base * 4, 0.9) : base,
+      width: lit ? 2 : 0.9,
+    }
   }
 
   return (
@@ -106,20 +169,24 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
       />
 
       {/* Legend */}
-      <div className="absolute bottom-4 left-4 flex items-center gap-4 text-xs text-spotify-text bg-spotify-card/70 backdrop-blur px-3 py-2 rounded-lg border border-spotify-border">
+      <div className="absolute bottom-4 left-4 flex items-center gap-3 text-xs text-spotify-text bg-spotify-card/80 backdrop-blur px-3 py-2 rounded-lg border border-spotify-border">
         <span className="flex items-center gap-1.5">
-          <span className="w-2 h-2 rounded-full bg-energy-low inline-block" /> Low energy
+          <span className="w-2 h-2 rounded-full bg-energy-low inline-block" /> Calm
         </span>
         <span className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-energy-mid inline-block" /> Mid
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="w-2 h-2 rounded-full bg-energy-high inline-block" /> High
+          <span className="w-2 h-2 rounded-full bg-energy-high inline-block" /> Intense
         </span>
-        <span className="text-spotify-border">|</span>
-        <span>Node size = play count</span>
-        <span className="text-spotify-border">|</span>
-        <span>{nodes.length} tracks · {simEdges.length} edges</span>
+        <span className="text-spotify-border">·</span>
+        <span>Size = plays</span>
+        <span className="text-spotify-border">·</span>
+        <span>Drag bubble to pin · Double-click to unpin</span>
+        <span className="text-spotify-border">·</span>
+        <span className="text-spotify-green">{nodes.length} tracks</span>
+        <span className="text-spotify-border">·</span>
+        <span>{simEdges.length} links</span>
       </div>
 
       <svg
@@ -127,14 +194,33 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
         width={dimensions.width}
         height={dimensions.height}
         className="w-full h-full"
+        onMouseMove={handleSvgMouseMove}
+        onMouseUp={handleSvgMouseUp}
+        onMouseLeave={handleSvgMouseUp}
       >
+        {/* SVG defs: subtle gradient for edges */}
+        <defs>
+          <filter id="glow">
+            <feGaussianBlur stdDeviation="2" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+
         <g ref={gRef}>
-          {/* Edges */}
+          {/* ── Edges ── */}
           {simEdges.map((edge, i) => {
             const src = edge.source as ForceNode
             const tgt = edge.target as ForceNode
-            const srcHovered = hoveredTrackId === src.id || hoveredTrackId === tgt.id
-            const opacity = srcHovered ? edgeOpacity(edge.similarity) * 3 : edgeOpacity(edge.similarity)
+            const lit = hoveredTrackId === src.id || hoveredTrackId === tgt.id
+            const { opacity, width } = edgeStyle(edge.similarity, lit)
+
+            // Blend edge colour between the two node colours
+            const stroke = lit
+              ? '#a0f0c0'   // bright mint when highlighted
+              : '#7dd3a8'   // soft teal at rest — readable on black
 
             return (
               <line
@@ -143,24 +229,33 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
                 y1={src.y ?? 0}
                 x2={tgt.x ?? 0}
                 y2={tgt.y ?? 0}
-                stroke={srcHovered ? '#ffffff' : '#ffffff'}
+                stroke={stroke}
                 strokeOpacity={opacity}
-                strokeWidth={srcHovered ? 1.5 : 0.8}
+                strokeWidth={width}
               />
             )
           })}
 
-          {/* Nodes */}
-          {nodes.map((node) => (
-            <GraphNode
-              key={node.id}
-              node={node}
-              isSelected={selectedTrack?.track.id === node.id}
-              isHovered={hoveredTrackId === node.id}
-              onSelect={(n) => setSelectedTrack(n.enriched)}
-              onHover={setHoveredTrackId}
-            />
-          ))}
+          {/* ── Nodes ── */}
+          {nodes.map((node) => {
+            const isSelected = selectedTrack?.track.id === node.id
+            const isHovered  = hoveredTrackId === node.id
+            // Dim all nodes when something is selected, except the selection itself and hovered
+            const isActive   = !selectedTrack || isSelected || isHovered
+            return (
+              <GraphNode
+                key={node.id}
+                node={node}
+                isSelected={isSelected}
+                isHovered={isHovered}
+                isActive={isActive}
+                onSelect={(n) => setSelectedTrack(n.enriched)}
+                onHover={setHoveredTrackId}
+                onDragStart={handleNodeDragStart}
+                onDoubleClick={(nodeId) => releaseNode(nodeId)}
+              />
+            )
+          })}
         </g>
       </svg>
 
