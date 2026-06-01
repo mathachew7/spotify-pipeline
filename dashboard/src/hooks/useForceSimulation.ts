@@ -62,14 +62,26 @@ export function useForceSimulation(
       )
       .force('center', d3.forceCenter(width / 2, height / 2))
       .alphaDecay(0.02)
+      .stop()  // prevent auto-start — we pre-tick manually first
 
-    simulation.on('tick', () => {
-      const linkForce = simulation.force<d3.ForceLink<ForceNode, ForceEdge>>('link')
+    // Run synchronously to near-convergence so the graph appears settled on first paint
+    // (300 ticks brings alpha from 1.0 → ~0.002, well below the 0.001 stop threshold)
+    simulation.tick(300)
+
+    const getLinkForce = () =>
+      simulation.force<d3.ForceLink<ForceNode, ForceEdge>>('link')
+
+    // Push settled positions into state immediately — no scattered-bubble flash
+    const flush = () =>
       setState({
         nodes: [...simulation.nodes()],
-        edges: linkForce ? ([...linkForce.links()] as ForceEdge[]) : [],
+        edges: getLinkForce() ? ([...getLinkForce()!.links()] as ForceEdge[]) : [],
       })
-    })
+
+    flush()
+
+    // Live tick listener drives updates during drag-induced settling
+    simulation.on('tick', flush)
 
     simRef.current = simulation
 
