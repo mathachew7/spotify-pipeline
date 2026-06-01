@@ -1,0 +1,21 @@
+# Airflow extras (install into the Airflow image via requirements.txt mount)
+apache-airflow-providers-google==10.19.0
+apache-airflow-providers-http==4.10.0
+
+# Spotify + HTTP
+spotipy==2.23.0
+requests==2.32.3
+tenacity==8.3.0
+
+# GCP
+google-cloud-storage==2.17.0
+google-cloud-bigquery==3.25.0
+google-cloud-bigquery-storage==2.25.0
+
+# dbt
+dbt-core==1.8.3
+dbt-bigquery==1.8.1
+
+# Data
+pandas==2.2.2
+pyarrow==16.1.0

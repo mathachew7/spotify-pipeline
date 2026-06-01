@@ -1,0 +1,21 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit real secrets.
+
+# ── GCP ─────────────────────────────────────────────────
+gcp_project_id = "your-gcp-project-id"
+gcp_region     = "us-central1"
+
+# Optional — defaults to "{project_id}-spotify-raw"
+# gcs_bucket_name = "my-spotify-raw-bucket"
+
+bq_dataset_id  = "spotify_warehouse"
+
+# ── Vercel ───────────────────────────────────────────────
+vercel_api_token    = "your_vercel_token_here"
+vercel_team_id      = ""                        # leave empty for personal accounts
+vercel_project_name = "wavelength-dashboard"
+
+# ── Feature flags ────────────────────────────────────────
+# Set to false to skip that provider entirely
+enable_gcp    = true
+enable_vercel = true

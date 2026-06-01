@@ -1,0 +1,19 @@
+# Local state — never commit
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+
+# Variable files with real secrets
+terraform.tfvars
+*.auto.tfvars
+
+# Terraform working directories
+.terraform/
+.terraform.lock.hcl
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Generated SA key files
+*.json

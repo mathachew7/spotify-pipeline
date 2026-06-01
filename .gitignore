@@ -1,0 +1,57 @@
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Node / Dashboard ─────────────────────────────────────────────────────
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.vite/
+
+# ── Secrets & credentials ─────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+keys/
+*.json
+!package.json
+!tsconfig*.json
+!dbt_project.yml
+!profiles.yml
+
+# ── Terraform ────────────────────────────────────────────────────────────
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/*.tfstate.lock.info
+terraform/terraform.tfvars
+terraform/*.auto.tfvars
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/crash.log
+
+# ── Airflow ──────────────────────────────────────────────────────────────
+airflow/logs/
+airflow/plugins/
+airflow.cfg
+airflow.db
+standalone_admin_password.txt
+
+# ── dbt ──────────────────────────────────────────────────────────────────
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
+# ── OS ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
