@@ -42,15 +42,16 @@ export function useForceSimulation(
   useEffect(() => {
     if (initialNodes.length === 0) return
 
-    // Deep-clone so D3 can mutate x/y/vx/vy without affecting original props
+    // Deep-clone so D3 can mutate x/y/vx/vy/source/target without affecting original props
     const nodes: ForceNode[] = initialNodes.map((n) => ({ ...n }))
+    const edges = initialEdges.map((e) => ({ ...e }))
 
     const simulation = d3
       .forceSimulation<ForceNode, ForceEdge>(nodes)
       .force(
         'link',
         d3
-          .forceLink<ForceNode, ForceEdge>(initialEdges)
+          .forceLink<ForceNode, ForceEdge>(edges)
           .id((d) => d.id)
           .distance(80)
           .strength(0.3),
@@ -92,5 +93,9 @@ export function useForceSimulation(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialNodes.length, initialEdges.length, width, height])
 
-  return { nodes: state.nodes, edges: state.edges, fixNode, releaseNode }
+  const stopHeating = useCallback(() => {
+    simRef.current?.alphaTarget(0)
+  }, [])
+
+  return { nodes: state.nodes, edges: state.edges, fixNode, releaseNode, stopHeating }
 }

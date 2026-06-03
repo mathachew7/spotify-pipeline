@@ -1,3 +1,4 @@
+import { useRef, useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useDashboardStore } from '@/store/dashboardStore'
 import { AudioRadar } from '@/components/Charts/AudioRadar'
@@ -6,6 +7,26 @@ import { energyToColor } from '@/utils/audioFeatures'
 
 export function TrackDetailPanel() {
   const { selectedTrack, setSelectedTrack } = useDashboardStore()
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const [playing, setPlaying] = useState(false)
+  const [progress, setProgress] = useState(0)
+
+  // Stop + reset when track changes
+  useEffect(() => {
+    setPlaying(false)
+    setProgress(0)
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.currentTime = 0
+    }
+  }, [selectedTrack?.track.id])
+
+  function togglePlay() {
+    const audio = audioRef.current
+    if (!audio) return
+    if (playing) { audio.pause(); setPlaying(false) }
+    else { audio.play(); setPlaying(true) }
+  }
 
   return (
     <AnimatePresence>
@@ -17,7 +38,7 @@ export function TrackDetailPanel() {
           exit={{ x: '100%' }}
           transition={{ type: 'spring', stiffness: 320, damping: 32 }}
           className="absolute top-0 right-0 h-full w-80 border-l border-spotify-border flex flex-col z-20 overflow-y-auto"
-          style={{ backgroundColor: '#181818' }}
+          style={{ backgroundColor: '#222222', boxShadow: '-8px 0 40px rgba(0,0,0,0.85)' }}
         >
           {/* Header */}
           <div className="flex items-start justify-between p-4 border-b border-spotify-border">
@@ -59,6 +80,47 @@ export function TrackDetailPanel() {
               </div>
             </div>
           </div>
+
+          {/* 30-second preview player */}
+          {selectedTrack.track.preview_url ? (
+            <div className="px-4 py-3 border-b border-spotify-border">
+              <audio
+                ref={audioRef}
+                src={selectedTrack.track.preview_url}
+                onTimeUpdate={() => {
+                  const a = audioRef.current
+                  if (a && a.duration) setProgress(a.currentTime / a.duration)
+                }}
+                onEnded={() => { setPlaying(false); setProgress(0) }}
+              />
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={togglePlay}
+                  className="w-8 h-8 rounded-full bg-spotify-green flex items-center justify-center flex-shrink-0 hover:bg-green-400 transition-colors"
+                >
+                  {playing
+                    ? <span className="text-black text-[10px] font-bold">❚❚</span>
+                    : <span className="text-black text-xs ml-0.5">▶</span>
+                  }
+                </button>
+                <div className="flex-1 space-y-1">
+                  <div className="h-1 bg-spotify-border rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-spotify-green rounded-full transition-all duration-100"
+                      style={{ width: `${progress * 100}%` }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-spotify-text">30s preview</p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="px-4 py-2.5 border-b border-spotify-border">
+              <p className="text-[10px] text-spotify-text/50 italic">
+                No preview available — connect Spotify for audio
+              </p>
+            </div>
+          )}
 
           {/* Audio feature bars */}
           <div className="p-4 border-b border-spotify-border">

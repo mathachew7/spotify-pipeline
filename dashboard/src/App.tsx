@@ -1,38 +1,77 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { TopBar } from '@/components/Layout/TopBar'
 import { Sidebar } from '@/components/Layout/Sidebar'
 import { ForceGraph } from '@/components/ForceGraph/ForceGraph'
 import { DataUploader } from '@/components/Layout/DataUploader'
 import { useSpotifyData } from '@/hooks/useSpotifyData'
 import { useDashboardStore } from '@/store/dashboardStore'
+import {
+  exchangeCode,
+  getStoredAuth,
+  isTokenFresh,
+  refreshAccessToken,
+  clearAuth,
+  type SpotifyAuth,
+} from '@/utils/spotifyAuth'
 import type { TimeRange } from '@/types/spotify'
-
-type DataMode = 'mock' | 'token' | 'bigquery'
 
 function cutoffForRange(range: TimeRange): Date | null {
   const now = new Date()
+  if (range === '1d')  return new Date(now.getTime() - 1  * 86_400_000)
+  if (range === '3d')  return new Date(now.getTime() - 3  * 86_400_000)
   if (range === '7d')  return new Date(now.getTime() - 7  * 86_400_000)
   if (range === '30d') return new Date(now.getTime() - 30 * 86_400_000)
   if (range === '90d') return new Date(now.getTime() - 90 * 86_400_000)
-  return null   // 'all'
+  return null
 }
 
 export default function App() {
-  const [dataMode, setDataMode] = useState<DataMode>('mock')
-  const [accessToken, setAccessToken] = useState<string | undefined>()
+  const [auth, setAuth] = useState<SpotifyAuth | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [uploaderOpen, setUploaderOpen] = useState(false)
+
+  const dataMode = auth ? 'token' : 'mock'
+  const accessToken = auth?.accessToken
+
+  // ── Handle OAuth callback + auto-reconnect on mount ───────────────────
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get('code')
+    const error = params.get('error')
+
+    // Always clean the URL so the code isn't visible / reused
+    if (code || error) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+
+    if (code) {
+      exchangeCode(code).then((newAuth) => {
+        if (newAuth) setAuth(newAuth)
+      })
+      return
+    }
+
+    // No callback — try to restore from localStorage
+    const stored = getStoredAuth()
+    if (!stored) return
+
+    if (isTokenFresh(stored)) {
+      setAuth(stored)
+    } else {
+      refreshAccessToken(stored).then((refreshed) => {
+        if (refreshed) setAuth(refreshed)
+        else clearAuth()
+      })
+    }
+  }, [])
 
   const { filters } = useDashboardStore()
   const { data: allTracks = [], isLoading, error } = useSpotifyData({ mode: dataMode, accessToken })
 
-  // Apply ALL filters: time range (trim play histories), energy, artist
   const filteredTracks = useMemo(() => {
     const cutoff = cutoffForRange(filters.timeRange)
-
     return allTracks
       .map((t) => {
-        // Trim play history to the selected window
         const history = cutoff
           ? t.playHistory.filter((ph) => new Date(ph.played_at) >= cutoff)
           : t.playHistory
@@ -47,31 +86,21 @@ export default function App() {
         }
       })
       .filter((t) => {
-        const hasPlays  = t.playCount > 0
-        const energyOk  = t.audioFeatures.energy >= filters.energyRange[0] &&
-                          t.audioFeatures.energy <= filters.energyRange[1]
-        const artistOk  = filters.artistFilter === null ||
-                          t.track.artists.some((a) => a.name === filters.artistFilter)
+        const hasPlays = t.playCount > 0
+        const energyOk = t.audioFeatures.energy >= filters.energyRange[0] &&
+                         t.audioFeatures.energy <= filters.energyRange[1]
+        const artistOk = filters.artistFilter === null ||
+                         t.track.artists.some((a) => a.name === filters.artistFilter)
         return hasPlays && energyOk && artistOk
       })
   }, [allTracks, filters.timeRange, filters.energyRange, filters.artistFilter])
-
-  const handleTokenSubmit = (token: string) => {
-    setAccessToken(token)
-    setDataMode('token')
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const handleJsonUpload = (_json: unknown) => {
-    console.log('JSON upload — wiring coming in step 8')
-  }
 
   return (
     <div className="flex flex-col h-screen bg-spotify-black text-white overflow-hidden">
       <TopBar
         trackCount={allTracks.length}
         filteredCount={filteredTracks.length}
-        dataMode={dataMode}
+        auth={auth}
         onOpenUploader={() => setUploaderOpen(true)}
       />
 
@@ -84,11 +113,7 @@ export default function App() {
           {sidebarOpen ? '‹' : '›'}
         </button>
 
-        <Sidebar
-          allTracks={allTracks}
-          filteredTracks={filteredTracks}
-          isOpen={sidebarOpen}
-        />
+        <Sidebar allTracks={allTracks} filteredTracks={filteredTracks} isOpen={sidebarOpen} />
 
         <main className="flex-1 relative min-w-0">
           {isLoading && (
@@ -110,8 +135,8 @@ export default function App() {
       <DataUploader
         isOpen={uploaderOpen}
         onClose={() => setUploaderOpen(false)}
-        onTokenSubmit={handleTokenSubmit}
-        onJsonUpload={handleJsonUpload}
+        auth={auth}
+        onDisconnect={() => setAuth(null)}
       />
     </div>
   )

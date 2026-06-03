@@ -4,7 +4,7 @@ import type { EnrichedTrack, ForceEdge } from '@/types/spotify'
 
 // Each node connects to its K most similar peers.
 // K=3 gives ~45-55 unique edges for 30 tracks — a clean, readable graph.
-const K_NEIGHBOURS = 3
+const K_NEIGHBOURS = 5
 
 export function useAudioSimilarity(tracks: EnrichedTrack[]): ForceEdge[] {
   return useMemo(() => {

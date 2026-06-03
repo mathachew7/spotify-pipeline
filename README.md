@@ -8,11 +8,11 @@ A full-stack data pipeline that pulls your Spotify listening history, enriches i
 
 Every day, an Airflow job fetches your recently-played tracks from the Spotify API, adds audio-feature data (energy, valence, danceability, tempo, …), and lands everything in BigQuery. A React dashboard reads that data and turns it into:
 
-- **Force graph** — each bubble is a track. Size = how often you played it. Colour = energy level (green → calm, amber → mid, red → intense). Edges connect tracks that sound similar (cosine similarity on 7 audio features, k-NN k=3 so each node connects to its 3 closest sonic neighbours).
+- **Force graph** — each bubble is a track. Size = how often you played it. Colour = energy level (green → calm, amber → mid, red → intense). Edges connect tracks that sound similar (cosine similarity on 7 audio features, k-NN k=5).
 - **Mood timeline** — average energy and valence per day so you can see how your listening shifts over time.
-- **Listening heatmap** — day-of-week × hour grid showing when you listen most, clickable to see which tracks played at that exact slot.
+- **Listening heatmap** — day-of-week × hour grid showing when you listen most; click any cell to highlight exactly those tracks on the force graph.
 - **Top artists bar** — click any artist to filter the entire dashboard to that artist's tracks.
-- **Track detail panel** — click any bubble for a full breakdown: album art, play history, per-feature progress bars, and a radar chart.
+- **Track detail panel** — click any bubble for a full breakdown: album art, 30-second audio preview, play history, per-feature progress bars, and a radar chart.
 
 ---
 
@@ -29,6 +29,7 @@ Every day, an Airflow job fetches your recently-played tracks from the Spotify A
 | Visualisation | D3.js v7 (force simulation), Recharts |
 | Animation | Framer Motion |
 | State | Zustand + React Query |
+| Auth | Spotify OAuth 2.0 PKCE (browser-only, no backend) |
 | Hosting | Vercel |
 
 ---
@@ -44,13 +45,13 @@ spotify-pipeline/
 ├── dashboard/               # React + Vite frontend
 │   └── src/
 │       ├── components/
-│       │   ├── ForceGraph/  # D3 force graph + node/edge rendering
+│       │   ├── ForceGraph/  # D3 force graph, node/edge rendering, search, export
 │       │   ├── Charts/      # MoodTimeline, ListeningHeatmap, AudioRadar, TopArtistsBar
-│       │   └── Layout/      # TopBar, Sidebar, DataUploader
+│       │   └── Layout/      # TopBar, Sidebar, SpotifyConnect modal
 │       ├── hooks/           # useForceSimulation, useAudioSimilarity, useSpotifyData
 │       ├── store/           # Zustand dashboard store
 │       ├── types/           # TypeScript types (EnrichedTrack, ForceNode, …)
-│       └── utils/           # audioFeatures helpers (cosine similarity, colour mapping)
+│       └── utils/           # audioFeatures helpers, spotifyAuth (PKCE flow)
 ├── terraform/               # IaC: GCS bucket, BigQuery, IAM, Vercel project
 │   ├── modules/
 │   │   ├── gcp/             # GCS + BigQuery resources
@@ -65,7 +66,7 @@ spotify-pipeline/
 
 ## Local setup
 
-### 1 — Dashboard (mock data, no GCP needed)
+### 1 — Dashboard (mock data, no credentials needed)
 
 ```bash
 cd dashboard
@@ -74,14 +75,22 @@ npm run dev
 # → http://localhost:5173
 ```
 
-The app starts in **mock mode** — 30 pre-generated tracks with realistic audio features and play histories so you can explore all visualisations without any credentials.
+The app starts in **mock mode** with 30 pre-generated tracks spread across realistic time windows (1d → 90d → all), so every time-range filter shows a different subset. All visualisations and interactions work without any credentials.
 
-### 2 — Airflow pipeline (Docker)
+### 2 — Connect your real Spotify account
+
+Click **Connect Spotify** in the top bar. The modal walks you through three steps:
+
+1. Create a free app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
+2. Add your redirect URI (shown in the modal) to that app's settings
+3. Paste your **Client ID** and click **Connect with Spotify**
+
+The app uses the **OAuth 2.0 PKCE flow** — no backend, no client secret. Your access token is stored in `localStorage` and refreshed automatically. Your real recently-played tracks and audio features load immediately after authorising.
+
+### 3 — Airflow pipeline (Docker)
 
 ```bash
-# copy and fill in your credentials
-cp .env.example .env
-
+cp .env.example .env   # fill in credentials
 docker-compose up -d
 # Airflow UI → http://localhost:8080  (admin / admin)
 ```
@@ -103,7 +112,7 @@ The DAG runs daily at 06:00 UTC. It:
 3. Uploads a JSON file to GCS (`raw/plays/YYYY-MM-DD.json`)
 4. Loads the file into BigQuery
 
-### 3 — dbt transforms
+### 4 — dbt transforms
 
 ```bash
 cd dbt
@@ -112,18 +121,12 @@ dbt run
 dbt test
 ```
 
-### 4 — Terraform (GCP + Vercel)
+### 5 — Terraform (GCP + Vercel)
 
 ```bash
 cd terraform
-
-# create terraform.tfvars from the example
 cp terraform.tfvars.example terraform.tfvars
-# fill in project_id, region, vercel_api_token, …
-
-terraform init
-terraform plan
-terraform apply
+terraform init && terraform plan && terraform apply
 ```
 
 Feature flags in `terraform.tfvars`:
@@ -139,65 +142,43 @@ enable_vercel = true   # provisions Vercel project + initial deploy
 
 Each track becomes a node. Two audio-feature vectors are compared with **cosine similarity** across 7 dimensions: danceability, energy, valence, acousticness, instrumentalness, speechiness, liveness.
 
-Instead of a global threshold (which connects ~88% of pairs for pop music — too noisy), the graph uses **k-nearest neighbours (k=3)**: each track connects only to its 3 most similar peers. This gives ~50 meaningful edges for 30 tracks — a readable structure where clusters of similar-sounding tracks emerge naturally.
+The graph uses **k-nearest neighbours (k=5)**: each track connects to its 5 most similar peers. Edge opacity scales with similarity — stronger connections appear brighter.
 
-Node physics runs as a D3 v7 force simulation:
-- Link distance 80, strength 0.3 (pulls similar tracks together)
-- Many-body charge −120 (pushes nodes apart)
-- Collision detection at radius+6 (prevents overlap)
+Node physics: D3 v7 force simulation with link distance 80, many-body repulsion −120, and collision detection at radius+6.
 
 **Interactions:**
-- Drag a bubble to pin it at that position and reshape the graph
-- Double-click a pinned bubble to release it back into physics
-- Click a bubble to open the detail panel (all others dim)
-- Click an artist in the sidebar to filter the whole dashboard
-
----
-
-## Real data snapshot
-
-Running against a real Spotify account over 30 days produces something like:
-
-```
-Tracks analysed:   30
-Unique artists:     9
-Total plays:       47
-Date range:  May 1 – May 31, 2026
-Peak hour:   11pm–12am (Friday)
-
-Energy distribution:
-  Calm  (< 35%)  ████░░░░░░  8 tracks
-  Mid   (35–70%) ██████░░░░ 14 tracks
-  Hype  (> 70%)  ████████░░  8 tracks
-
-Top sonic cluster: high-energy / high-valence tracks (🔥)
-  — connected by short edges, appear as a tight knot
-  in the upper-right of the graph
-```
+- **Drag** any bubble independently — pointer capture ensures only that node moves; connected nodes rearrange via live physics. Drop to pin.
+- **Double-click** a pinned node to release it back into physics.
+- **Click** a bubble to open the detail panel (others dim).
+- **Search** (top centre) — type a track or artist; matching nodes stay lit, everything else dims.
+- **Heatmap cross-highlight** — clicking a day/hour cell in the listening heatmap highlights those exact tracks on the graph.
+- **Export** — the `↓` button in the zoom controls saves the current graph as a 2× PNG.
 
 ---
 
 ## Dashboard features at a glance
 
-| Feature | Where |
-|---------|-------|
-| Bubble size | Play count |
+| Feature | Detail |
+|---------|--------|
+| Bubble size | Play count in the selected time window |
 | Bubble colour | Energy (green → amber → red) |
-| Bubble pulse speed | Recency (faster = more recently played) |
-| Edge thickness / opacity | Cosine similarity (thicker = more similar) |
-| Time filter (7d / 30d / 90d / all) | Top bar |
+| Bubble pulse speed | Recency (faster = played more recently) |
+| Edge opacity | Cosine similarity (brighter = more similar) |
+| Time filter | 1d / 3d / 7d / 30d / 90d / All |
 | Artist filter | Sidebar → Top Artists — click any row |
+| Heatmap highlight | Click any day×hour cell → matching bubbles light up |
+| Search highlight | Type in search bar → matching bubbles light up |
+| Audio preview | Click a bubble → 30s Spotify preview in the detail panel |
+| Export PNG | `↓` button in zoom controls |
 | Mood timeline | Sidebar — avg energy + valence per day |
-| Listening heatmap | Sidebar — day × hour grid, click cell for track list |
-| Track detail | Click any bubble — audio features, radar, play history |
-| Zoom / pan | Scroll or use +/− buttons; drag background to pan |
+| Track detail | Album art, genres, feature bars, radar chart, play history |
+| Zoom / pan | Scroll or +/− buttons; drag background to pan |
 | Pin / unpin node | Drag to pin; double-click to release |
 
 ---
 
-## Connect your real data
+## Connecting real data
 
-In the top bar, click **Connect** and choose:
+Click **Connect Spotify** in the top bar. The PKCE flow runs entirely in the browser — no server needed. After authorising, the dashboard switches from mock data to your real listening history automatically. Your avatar and display name appear in the top bar while connected.
 
-- **Spotify token** — paste a short-lived access token to pull your live recently-played data directly in the browser (no backend needed)
-- **Upload JSON** — drop an export file from the Airflow pipeline
+To disconnect, click your name in the top bar → **Disconnect**.

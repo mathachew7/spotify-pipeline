@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useDashboardStore } from '@/store/dashboardStore'
 import type { EnrichedTrack } from '@/types/spotify'
 
 interface ListeningHeatmapProps {
@@ -18,11 +19,12 @@ function hourLabel(h: number): string {
 interface CellInfo {
   day: number
   hour: number
-  plays: Array<{ trackName: string; artist: string; playedAt: string }>
+  plays: Array<{ trackId: string; trackName: string; artist: string; playedAt: string }>
 }
 
 export function ListeningHeatmap({ tracks }: ListeningHeatmapProps) {
   const [selected, setSelected] = useState<CellInfo | null>(null)
+  const { setHeatmapHighlight } = useDashboardStore()
 
   // Build matrix AND collect per-cell track data
   const { matrix, cellTracks, dateRange } = useMemo(() => {
@@ -44,6 +46,7 @@ export function ListeningHeatmap({ tracks }: ListeningHeatmapProps) {
         const hr = d.getHours()
         m[dow][hr]++
         ct[dow][hr].push({
+          trackId: track.track.id,
           trackName: track.track.name,
           artist: track.track.artists[0]?.name ?? '',
           playedAt: d.toLocaleString(undefined, {
@@ -87,8 +90,10 @@ export function ListeningHeatmap({ tracks }: ListeningHeatmapProps) {
     if (plays.length === 0) return
     if (selected?.day === day && selected?.hour === hour) {
       setSelected(null)
+      setHeatmapHighlight(null)
     } else {
       setSelected({ day, hour, plays })
+      setHeatmapHighlight(new Set(plays.map((p) => p.trackId)))
     }
   }
 
@@ -156,7 +161,7 @@ export function ListeningHeatmap({ tracks }: ListeningHeatmapProps) {
               <p className="text-xs font-semibold text-white">
                 {DAYS[selected.day]} · {hourLabel(selected.hour)} — {selected.plays.length} play{selected.plays.length !== 1 ? 's' : ''}
               </p>
-              <button onClick={() => setSelected(null)} className="text-spotify-text hover:text-white text-xs">✕</button>
+              <button onClick={() => { setSelected(null); setHeatmapHighlight(null) }} className="text-spotify-text hover:text-white text-xs">✕</button>
             </div>
             <ul className="space-y-1.5 max-h-36 overflow-y-auto">
               {selected.plays.map((p, i) => (

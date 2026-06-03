@@ -6,9 +6,12 @@ interface GraphNodeProps {
   isSelected: boolean
   isHovered: boolean
   isActive: boolean   // false when another node is selected → dims this node
+  isDragging: boolean
   onSelect: (node: ForceNode) => void
   onHover: (id: string | null) => void
-  onDragStart: (nodeId: string, e: React.MouseEvent) => void
+  onPointerDown: (nodeId: string, e: React.PointerEvent<SVGGElement>) => void
+  onPointerMove: (nodeId: string, e: React.PointerEvent<SVGGElement>) => void
+  onPointerUp: (nodeId: string, e: React.PointerEvent<SVGGElement>) => void
   onDoubleClick: (nodeId: string) => void
 }
 
@@ -29,8 +32,8 @@ function moodEmoji(energy: number, valence: number) {
 }
 
 export function GraphNode({
-  node, isSelected, isHovered, isActive,
-  onSelect, onHover, onDragStart, onDoubleClick,
+  node, isSelected, isHovered, isActive, isDragging,
+  onSelect, onHover, onPointerDown, onPointerMove, onPointerUp, onDoubleClick,
 }: GraphNodeProps) {
   const { radius, color, pulseSpeed } = node
   const x = node.x ?? 0
@@ -46,12 +49,15 @@ export function GraphNode({
   return (
     <g
       transform={`translate(${x},${y})`}
-      style={{ cursor: isHovered ? 'grab' : 'pointer', opacity: isActive ? 1 : 0.22, transition: 'opacity 0.25s ease' }}
-      onMouseDown={(e) => onDragStart(node.id, e)}
+      style={{ cursor: isDragging ? 'grabbing' : (isHovered ? 'grab' : 'pointer'), opacity: isActive ? 1 : 0.22, transition: 'opacity 0.25s ease' }}
+      onMouseDown={(e) => { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation() }}
+      onPointerDown={(e) => onPointerDown(node.id, e)}
+      onPointerMove={(e) => onPointerMove(node.id, e)}
+      onPointerUp={(e) => onPointerUp(node.id, e)}
       onClick={() => onSelect(node)}
       onDoubleClick={() => onDoubleClick(node.id)}
       onMouseEnter={() => onHover(node.id)}
-      onMouseLeave={() => onHover(null)}
+      onMouseLeave={() => { if (!isDragging) onHover(null) }}
     >
       {/* Outer pulse ring */}
       <motion.circle

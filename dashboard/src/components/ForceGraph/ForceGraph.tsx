@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState } from 'react'
+import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
 import * as d3 from 'd3'
 import { useForceSimulation } from '@/hooks/useForceSimulation'
 import { useAudioSimilarity } from '@/hooks/useAudioSimilarity'
@@ -7,6 +7,7 @@ import { energyToColor, getPulseSpeed, playCountToRadius } from '@/utils/audioFe
 import { GraphNode } from './GraphNode'
 import { GraphControls } from './GraphControls'
 import { TrackDetailPanel } from './TrackDetailPanel'
+import { SearchBar } from './SearchBar'
 import type { EnrichedTrack, ForceNode, ForceEdge } from '@/types/spotify'
 
 interface ForceGraphProps {
@@ -29,8 +30,25 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 })
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const { selectedTrack, hoveredTrackId, setSelectedTrack, setHoveredTrackId } =
+  const { selectedTrack, hoveredTrackId, heatmapHighlight, searchQuery, setSelectedTrack, setHoveredTrackId } =
     useDashboardStore()
+
+  // Compute search matches
+  const searchMatches = useMemo(() => {
+    if (!searchQuery.trim()) return null
+    const q = searchQuery.toLowerCase()
+    return new Set(
+      tracks
+        .filter((t) =>
+          t.track.name.toLowerCase().includes(q) ||
+          t.track.artists.some((a) => a.name.toLowerCase().includes(q))
+        )
+        .map((t) => t.track.id)
+    )
+  }, [tracks, searchQuery])
+
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null)
+  const justDraggedRef = useRef(false)
 
   const maxPlayCount = Math.max(...tracks.map((t) => t.playCount), 1)
   const forceNodes: ForceNode[] = tracks.map((t) => ({
@@ -42,7 +60,7 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
   }))
 
   const edges: ForceEdge[] = useAudioSimilarity(tracks)
-  const { nodes, edges: simEdges, fixNode, releaseNode } = useForceSimulation(
+  const { nodes, edges: simEdges, fixNode, releaseNode, stopHeating } = useForceSimulation(
     forceNodes, edges, dimensions.width, dimensions.height,
   )
 
@@ -77,58 +95,90 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
     zoomRef.current = zoom
   }, [])
 
-  // ── Node drag: mousedown starts tracking ──────────────────────────────
-  const handleNodeDragStart = useCallback(
-    (nodeId: string, e: React.MouseEvent) => {
-      e.stopPropagation()
-      e.nativeEvent.stopImmediatePropagation()  // prevent D3 zoom from panning
-      dragStateRef.current = {
-        nodeId,
-        startX: e.clientX,
-        startY: e.clientY,
-        hasMoved: false,
-      }
-      // Pre-fix so node doesn't jump when we start moving
+  // ── Per-node pointer capture drag ─────────────────────────────────────
+  // Using pointer events + setPointerCapture so each bubble claims the pointer
+  // the moment you press it — D3 zoom never sees the events during a node drag.
+
+  const handleNodePointerDown = useCallback(
+    (nodeId: string, e: React.PointerEvent<SVGGElement>) => {
+      ;(e.currentTarget as SVGGElement).setPointerCapture(e.pointerId)
+      setDraggingNodeId(nodeId)
+      dragStateRef.current = { nodeId, startX: e.clientX, startY: e.clientY, hasMoved: false }
       const simNode = nodes.find((n) => n.id === nodeId)
       if (simNode) fixNode(nodeId, simNode.x ?? 0, simNode.y ?? 0)
     },
     [nodes, fixNode],
   )
 
-  // ── Node drag: mousemove updates pinned position ──────────────────────
-  const handleSvgMouseMove = useCallback(
-    (e: React.MouseEvent<SVGSVGElement>) => {
+  const handleNodePointerMove = useCallback(
+    (nodeId: string, e: React.PointerEvent<SVGGElement>) => {
       const drag = dragStateRef.current
-      if (!drag || !svgRef.current) return
-
+      if (!drag || drag.nodeId !== nodeId || !svgRef.current) return
       const dx = e.clientX - drag.startX
       const dy = e.clientY - drag.startY
       if (!drag.hasMoved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
-
       drag.hasMoved = true
       const rect = svgRef.current.getBoundingClientRect()
       const transform = d3.zoomTransform(svgRef.current)
-      // Convert screen → simulation space
       const simX = (e.clientX - rect.left - transform.x) / transform.k
       const simY = (e.clientY - rect.top - transform.y) / transform.k
-      fixNode(drag.nodeId, simX, simY)
+      fixNode(nodeId, simX, simY)
     },
     [fixNode],
   )
 
-  // ── Node drag: mouseup ────────────────────────────────────────────────
-  // If the user actually dragged → keep node PINNED at drop position (reshape!)
-  // If it was just a quick click → release so physics takes over again
-  const handleSvgMouseUp = useCallback(() => {
-    const drag = dragStateRef.current
-    if (!drag) return
-    if (!drag.hasMoved) {
-      // Plain click — release the pin so node stays in physics
-      releaseNode(drag.nodeId)
+  const handleNodePointerUp = useCallback(
+    (nodeId: string, e: React.PointerEvent<SVGGElement>) => {
+      const drag = dragStateRef.current
+      if (!drag || drag.nodeId !== nodeId) return
+      ;(e.currentTarget as SVGGElement).releasePointerCapture(e.pointerId)
+      dragStateRef.current = null
+      setDraggingNodeId(null)
+      if (!drag.hasMoved) {
+        releaseNode(nodeId)
+      } else {
+        justDraggedRef.current = true
+        setTimeout(() => { justDraggedRef.current = false }, 50)
+        stopHeating()
+      }
+    },
+    [releaseNode, stopHeating],
+  )
+
+  // ── Export PNG ────────────────────────────────────────────────────────
+  const handleExport = useCallback(() => {
+    const svg = svgRef.current
+    if (!svg) return
+    const { width, height } = svg.getBoundingClientRect()
+    const clone = svg.cloneNode(true) as SVGSVGElement
+    // Add dark background so PNG isn't transparent
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+    bg.setAttribute('width', String(width))
+    bg.setAttribute('height', String(height))
+    bg.setAttribute('fill', '#121212')
+    clone.insertBefore(bg, clone.firstChild)
+    const svgStr = new XMLSerializer().serializeToString(clone)
+    const canvas = document.createElement('canvas')
+    const scale = 2
+    canvas.width = width * scale
+    canvas.height = height * scale
+    const ctx = canvas.getContext('2d')!
+    ctx.scale(scale, scale)
+    const img = new Image()
+    img.onload = () => {
+      ctx.drawImage(img, 0, 0)
+      canvas.toBlob((blob) => {
+        if (!blob) return
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'wavelength-graph.png'
+        a.click()
+        URL.revokeObjectURL(url)
+      }, 'image/png')
     }
-    // If hasMoved → node stays pinned exactly where user dropped it
-    dragStateRef.current = null
-  }, [releaseNode])
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgStr)}`
+  }, [])
 
   // ── Zoom controls ─────────────────────────────────────────────────────
   const handleZoomIn = useCallback(() => {
@@ -149,13 +199,15 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
       .call(zoomRef.current.transform, d3.zoomIdentity)
   }, [])
 
-  // Edge colour — linear gradient between node colours would be ideal;
-  // using a soft teal so edges read clearly against the dark background
+  const minSim = simEdges.length > 0 ? Math.min(...simEdges.map((e) => e.similarity)) : 0
+  const maxSim = simEdges.length > 0 ? Math.max(...simEdges.map((e) => e.similarity)) : 1
+  const simRange = maxSim - minSim || 1
+
   function edgeStyle(sim: number, lit: boolean): { opacity: number; width: number } {
-    // similarity 0.75–1.0 → opacity 0.18–0.55 (visible but not noisy)
-    const base = 0.18 + ((sim - 0.75) / 0.25) * 0.37
+    const norm = (sim - minSim) / simRange          // 0 → weakest edge, 1 → strongest
+    const base = 0.12 + norm * 0.45                 // 0.12–0.57, always visible
     return {
-      opacity: lit ? Math.min(base * 4, 0.9) : base,
+      opacity: lit ? Math.min(base * 3, 0.9) : base,
       width: lit ? 2 : 0.9,
     }
   }
@@ -166,7 +218,13 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
         onResetZoom={handleResetZoom}
+        onExport={handleExport}
       />
+
+      {/* Floating search — top centre */}
+      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
+        <SearchBar matchCount={searchMatches?.size ?? 0} />
+      </div>
 
       {/* Legend */}
       <div className="absolute bottom-4 left-4 flex items-center gap-3 text-xs text-spotify-text bg-spotify-card/80 backdrop-blur px-3 py-2 rounded-lg border border-spotify-border">
@@ -194,9 +252,6 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
         width={dimensions.width}
         height={dimensions.height}
         className="w-full h-full"
-        onMouseMove={handleSvgMouseMove}
-        onMouseUp={handleSvgMouseUp}
-        onMouseLeave={handleSvgMouseUp}
       >
         {/* SVG defs: subtle gradient for edges */}
         <defs>
@@ -238,10 +293,13 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
 
           {/* ── Nodes ── */}
           {nodes.map((node) => {
-            const isSelected = selectedTrack?.track.id === node.id
-            const isHovered  = hoveredTrackId === node.id
-            // Dim all nodes when something is selected, except the selection itself and hovered
-            const isActive   = !selectedTrack || isSelected || isHovered
+            const isSelected  = selectedTrack?.track.id === node.id
+            const isHovered   = hoveredTrackId === node.id
+            const inHeatmap   = heatmapHighlight?.has(node.id) ?? false
+            const inSearch    = searchMatches?.has(node.id) ?? false
+            const isActive    =
+              (!selectedTrack && !heatmapHighlight && !searchMatches) ||
+              isSelected || isHovered || inHeatmap || inSearch
             return (
               <GraphNode
                 key={node.id}
@@ -249,9 +307,12 @@ export function ForceGraph({ tracks }: ForceGraphProps) {
                 isSelected={isSelected}
                 isHovered={isHovered}
                 isActive={isActive}
-                onSelect={(n) => setSelectedTrack(n.enriched)}
+                isDragging={draggingNodeId === node.id}
+                onSelect={(n) => { if (!justDraggedRef.current) setSelectedTrack(n.enriched) }}
                 onHover={setHoveredTrackId}
-                onDragStart={handleNodeDragStart}
+                onPointerDown={handleNodePointerDown}
+                onPointerMove={handleNodePointerMove}
+                onPointerUp={handleNodePointerUp}
                 onDoubleClick={(nodeId) => releaseNode(nodeId)}
               />
             )

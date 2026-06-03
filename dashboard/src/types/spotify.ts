@@ -77,7 +77,7 @@ export interface ForceEdge extends d3.SimulationLinkDatum<ForceNode> {
 
 // ── Dashboard state types ─────────────────────────────────────────────────
 
-export type TimeRange = '7d' | '30d' | '90d' | 'all'
+export type TimeRange = '1d' | '3d' | '7d' | '30d' | '90d' | 'all'
 
 export interface DashboardFilters {
   timeRange: TimeRange

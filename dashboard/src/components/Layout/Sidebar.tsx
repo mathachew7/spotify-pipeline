@@ -16,7 +16,7 @@ export function Sidebar({ allTracks, filteredTracks, isOpen }: SidebarProps) {
   if (!isOpen) return null
 
   return (
-    <aside className="w-72 flex-shrink-0 bg-spotify-dark border-r border-spotify-border flex flex-col gap-3 p-3 overflow-y-auto">
+    <aside className="w-72 flex-shrink-0 bg-spotify-dark border-r border-spotify-border flex flex-col gap-3 p-3 overflow-y-auto min-h-0 h-full">
       {/* Insight banner — shows when data is filtered or always */}
       <ArtistInsight tracks={allTracks} />
 
